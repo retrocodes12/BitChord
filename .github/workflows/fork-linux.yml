@@ -1,0 +1,108 @@
+name: Fork Linux
+
+# This fork's Linux desktop build. Upstream removed the desktop app after
+# 1.8.1 in favour of its web player; the `linux` branch keeps it, on top of
+# the same shared code the phone builds from. Packages come before the tests,
+# so a red test still leaves something to install.
+on:
+  push:
+    branches: [linux]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux · AppImage, deb
+    # 22.04 for its glibc: what is built here runs on that release and newer.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Write local.properties
+        run: |
+          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
+          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
+          echo "LISTEN_TOGETHER_SERVER=${{ secrets.LISTEN_TOGETHER_SERVER }}" >> local.properties
+
+      - name: Packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot binutils file
+          curl -sSL -o appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool.AppImage
+
+      - run: chmod +x gradlew
+
+      - name: Work out the version
+        id: version
+        run: |
+          version=$(sed -n 's/^extra\["bitchordVersionName"\] = "\(.*\)"$/\1/p' build.gradle.kts)
+          [ -n "$version" ] || { echo "no version in build.gradle.kts" >&2; exit 1; }
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "Building $version"
+
+      # On its own first: a compile error then costs minutes, not the whole run.
+      - name: Compile
+        run: ./gradlew :desktopApp:compileKotlin --continue
+
+      - name: Build the deb and the app image
+        run: ./gradlew :desktopApp:packageDeb :desktopApp:createDistributable
+
+      - name: The analyser and models are in the jar
+        run: |
+          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord/lib/app/desktopApp*.jar)
+          jar tf "$jar" | grep -q 'native/libbitchord_analysis.so'
+          jar tf "$jar" | grep -q 'models/.*\.onnx'
+
+      - name: Build the AppImage
+        run: |
+          desktopApp/packaging/appimage.sh \
+            desktopApp/build/compose/binaries/main/app/BitChord \
+            dist/BitChord-${{ steps.version.outputs.value }}-linux-x86_64.AppImage \
+            "$PWD/appimagetool.AppImage"
+
+      - name: Collect
+        run: |
+          v=${{ steps.version.outputs.value }}
+          mkdir -p dist
+          cp desktopApp/build/compose/binaries/main/deb/*.deb "dist/BitChord-$v-linux-amd64.deb"
+          ls -lh dist
+
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitchord-linux-appimage
+          path: dist/*.AppImage
+          compression-level: 0
+
+      - name: Upload the deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitchord-linux-deb
+          path: dist/*.deb
+          compression-level: 0
+
+      - name: Tests
+        run: ./gradlew :shared:jvmTest :desktopUi:jvmTest :desktopApp:test --continue
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-test-reports
+          path: |
+            desktopApp/build/reports/tests/
+            desktopUi/build/reports/tests/
+            shared/build/reports/tests/
