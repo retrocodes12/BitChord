@@ -40,8 +40,8 @@ class AddonSource(
     override val kind: SourceKind get() = config.kind
     override val displayName: String get() = config.displayName
 
-    /** Holds the pick for this instance's life: changing it is an edit, and [SourceRegistry] rebuilds on one. */
-    private val client = AddonClient(config.baseUrl, config.pickedQuality)
+    /** Holds the picks for this instance's life: changing one is an edit, and [SourceRegistry] rebuilds on one. */
+    private val client = AddonClient(config.baseUrl, config.pickedQuality, config.pickedSettings)
 
     /**
      * Rows this addon has recently handed over, by their own track id.
@@ -146,6 +146,7 @@ class AddonSource(
             manifest.requiresLosslessOutput,
             manifest.qualityOptions,
             manifest.requiresBitChordAuth,
+            manifest.choiceSettings,
         )
 
     // ── Health ────────────────────────────────────────────────────────────
@@ -308,8 +309,17 @@ class AddonSource(
      * Only the pinned play of a row asks for this; matching a YouTube track
      * to an addon and the upgrade passes still welcome whichever mix the
      * addon thinks best.
+     *
+     * [atmosRow] is the other way round: the row is the one tagged Dolby
+     * Atmos. It changes nothing unless the answer is a stereo file and the
+     * listener asked for Dolby streams to be insisted on — see [dolbyStream].
      */
-    suspend fun stream(trackId: String, request: StreamRequest, stereoOnly: Boolean): SourceStream? =
+    suspend fun stream(
+        trackId: String,
+        request: StreamRequest,
+        stereoOnly: Boolean,
+        atmosRow: Boolean = false,
+    ): SourceStream? =
         withContext(Dispatchers.IO) {
             if (!admitted("a stream")) return@withContext null
             val tier = request.tier
@@ -342,16 +352,60 @@ class AddonSource(
                 return@withContext fromRow(trackId, tier)
             }
 
-            openable(url, answer, trackId, tier).also { stream ->
-                if (stereoOnly && stream?.format?.isDolbyAtmos == true) {
-                    TrackLog.w(
-                        TAG,
-                        "${config.displayName}: asked for the stereo mix of $trackId with no Atmos hint " +
-                            "and was sent Atmos anyway",
-                    )
-                }
+            val stream = openable(url, answer, trackId, tier)
+            if (stereoOnly && stream?.format?.isDolbyAtmos == true) {
+                TrackLog.w(
+                    TAG,
+                    "${config.displayName}: asked for the stereo mix of $trackId with no Atmos hint " +
+                        "and was sent Atmos anyway",
+                )
             }
+            if (stereoOnly || stream?.format?.isDolbyAtmos == true || !insistsOnDolby(trackId, atmosRow)) {
+                return@withContext stream
+            }
+            dolbyStream(trackId, tier) ?: stream
         }
+
+    /**
+     * Whether a stereo answer for [trackId] is worth a second, stricter ask.
+     *
+     * Only for a row the addon itself tagged Dolby Atmos, so the mix is known
+     * to exist, and only while an Atmos answer would be accepted at all — the
+     * same gate the hint goes through. [atmosRow] is the caller knowing; the
+     * search row is this source remembering, for a caller that doesn't say.
+     */
+    private fun insistsOnDolby(trackId: String, atmosRow: Boolean): Boolean =
+        AppSettings.dolbyStreamsOnly.value &&
+            DeviceCodecs.atmosWanted &&
+            (atmosRow || rows[trackId]?.isDolbyAtmos == true)
+
+    /**
+     * The Dolby stream of an Atmos row whose first answer was a stereo file,
+     * or null when the addon has none to give.
+     *
+     * `atmos=auto` lets an addon answer an Atmos row with a stereo rendition
+     * of the mix, and some do, as a FLAC folded down for headphones. That is
+     * a fair answer to "auto" and not the stream a Dolby decoder was switched
+     * on for. This asks once more in the spec's strict mode, where stereo is
+     * not an answer, and keeps the result only if it really is a Dolby codec.
+     * Anything else, an error included, leaves the first answer standing: a
+     * track that plays in stereo beats one that doesn't play.
+     */
+    private suspend fun dolbyStream(trackId: String, tier: String): SourceStream? {
+        val answer = client.stream(trackId, tier, dolbyOnly = true).getOrNull()
+        val url = answer?.url?.ifBlank { null }
+        val stream = if (answer != null && url != null) {
+            openable(url, answer, trackId, tier)?.takeIf { it.format.isDolbyAtmos }
+        } else {
+            null
+        }
+        TrackLog.d(
+            TAG,
+            "${config.displayName}: $trackId is an Atmos row answered in stereo; asked again for the Dolby stream — " +
+                (stream?.format?.summary ?: "it has none to give"),
+        )
+        return stream
+    }
 
     /**
      * The stream the search row carried, when the `/stream` call had nothing.

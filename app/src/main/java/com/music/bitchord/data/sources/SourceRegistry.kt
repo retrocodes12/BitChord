@@ -9,6 +9,7 @@ import com.music.bitchord.data.TrackLog
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.settings.permits
 import com.music.bitchord.data.sources.addon.AddonAuth
+import com.music.bitchord.data.sources.addon.AddonChoiceSetting
 import com.music.bitchord.data.sources.addon.AddonClient
 import com.music.bitchord.data.sources.addon.AddonException
 import com.music.bitchord.data.sources.addon.AddonQualityOption
@@ -70,10 +71,34 @@ data class SourceConfig(
      * the manifest is next read.
      */
     val bitchordAuth: Boolean? = null,
+    /**
+     * The addon's other selects, as its manifest last said — see
+     * [AddonManifest.choiceSettings][com.music.bitchord.data.sources.addon.AddonManifest.choiceSettings].
+     * Stored for the same reason as [qualityOptions].
+     */
+    val choiceSettings: List<AddonChoiceSetting> = emptyList(),
+    /** What the user chose for each of [choiceSettings], by key. A key with no entry is left to the addon. */
+    val pickedSettings: Map<String, String> = emptyMap(),
 ) {
     /** The entry of [qualityOptions] in force: the pick while the addon still lists it, else its first. */
     val activeQuality: AddonQualityOption?
         get() = qualityOptions.firstOrNull { it.value == pickedQuality } ?: qualityOptions.firstOrNull()
+
+    /**
+     * The option of [setting] in force: the pick while the addon still lists
+     * it, else the one its manifest's default names. Null when there is
+     * neither — nothing is sent for the key then, so no option here can be
+     * said to be the one applied.
+     */
+    fun activeChoice(setting: AddonChoiceSetting): AddonQualityOption? =
+        setting.options.firstOrNull { it.value == pickedSettings[setting.key] }
+            ?: setting.options.firstOrNull { it.value == setting.defaultValue }
+
+    /** [choiceSettings] on one line, each with the option in force when there is one. */
+    val choiceSummary: String
+        get() = choiceSettings.joinToString(" · ") { setting ->
+            activeChoice(setting)?.let { "${setting.label}: ${it.label}" } ?: setting.label
+        }
 
     /** Whether this source is shut out right now because it needs an output that isn't connected. */
     val awaitsLosslessOutput: Boolean
@@ -94,6 +119,7 @@ data class SourceConfig(
             checkValidLossless = other.checkValidLossless,
             qualityOptions = other.qualityOptions,
             bitchordAuth = other.bitchordAuth,
+            choiceSettings = other.choiceSettings,
         )
 
     /** What the sources screen and the player show. Never blank. */
@@ -284,12 +310,14 @@ object SourceRegistry {
         checkValidLossless: Boolean,
         qualityOptions: List<AddonQualityOption>,
         bitchordAuth: Boolean,
+        choiceSettings: List<AddonChoiceSetting>,
     ) {
         val current = config(configId) ?: return
         if (current.allowDownloads == allowDownloads &&
             current.checkValidLossless == checkValidLossless &&
             current.qualityOptions == qualityOptions &&
-            current.bitchordAuth == bitchordAuth
+            current.bitchordAuth == bitchordAuth &&
+            current.choiceSettings == choiceSettings
         ) {
             return
         }
@@ -297,7 +325,7 @@ object SourceRegistry {
             TAG,
             "${current.displayName}: manifest now says allowDownloads=$allowDownloads " +
                 "checkValidLossless=$checkValidLossless qualityOptions=${qualityOptions.map { it.value }} " +
-                "bitchordAuth=$bitchordAuth",
+                "bitchordAuth=$bitchordAuth choiceSettings=${choiceSettings.map { it.key }}",
         )
         publish(
             configs.value.map {
@@ -307,6 +335,7 @@ object SourceRegistry {
                         checkValidLossless = checkValidLossless,
                         qualityOptions = qualityOptions,
                         bitchordAuth = bitchordAuth,
+                        choiceSettings = choiceSettings,
                     )
                 } else {
                     it
@@ -515,6 +544,14 @@ object SourceRegistry {
                     pickedQuality = existing?.pickedQuality?.takeIf { picked ->
                         detected.manifest.qualityOptions.any { it.value == picked }
                     },
+                    choiceSettings = detected.manifest.choiceSettings,
+                    // The same goes for these: kept only where the addon now
+                    // at this address lists the very value that was picked.
+                    pickedSettings = existing?.pickedSettings.orEmpty().filter { (key, picked) ->
+                        detected.manifest.choiceSettings.any { setting ->
+                            setting.key == key && setting.options.any { it.value == picked }
+                        }
+                    },
                 ),
             )
             is DetectedFormat.ModuleIndex -> Result.success(
@@ -526,6 +563,8 @@ object SourceRegistry {
                     label = existing?.label.orEmpty(),
                     qualityOptions = emptyList(),
                     pickedQuality = null,
+                    choiceSettings = emptyList(),
+                    pickedSettings = emptyMap(),
                 ),
             )
             is DetectedFormat.Unsupported -> Result.failure(AddonException(detected.reason))

@@ -165,7 +165,12 @@ object SourceResolver {
         val source = SourceRegistry.activeForDownload().firstOrNull { it.configId == configId } ?: return null
         return attempt(source) {
             if (source is AddonSource) {
-                source.stream(trackId, request, stereoOnly = mixOf(sourceQuality) == MIX_STEREO)
+                source.stream(
+                    trackId,
+                    request,
+                    stereoOnly = mixOf(sourceQuality) == MIX_STEREO,
+                    atmosRow = mixOf(sourceQuality) == MIX_ATMOS,
+                )
             } else {
                 source.stream(trackId, request)
             }
@@ -236,7 +241,12 @@ object SourceResolver {
         if (pinned != null) {
             attempt(pinned) {
                 if (picked) {
-                    (pinned as AddonSource).stream(trackId, request, stereoOnly = pickedMix == MIX_STEREO)
+                    (pinned as AddonSource).stream(
+                        trackId,
+                        request,
+                        stereoOnly = pickedMix == MIX_STEREO,
+                        atmosRow = pickedMix == MIX_ATMOS,
+                    )
                 } else {
                     pinned.stream(trackId, request)
                 }

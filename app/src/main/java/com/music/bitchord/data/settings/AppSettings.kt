@@ -352,6 +352,25 @@ object AppSettings {
     val dolbyAtmos = MutableStateFlow(true)
 
     /**
+     * Ask an addon a second time, strictly, when the Atmos row of a track is
+     * answered with a stereo file.
+     *
+     * [dolbyAtmos] asks with `atmos=auto`, and "auto" leaves the addon free to
+     * send a stereo rendition of the immersive mix — some send it folded down
+     * for headphones, as a FLAC. That plays, and it is not what a Dolby
+     * decoder was switched on for. With this on, such an answer is followed by
+     * one more request in the spec's strict mode, and the Dolby stream is
+     * played if that is what comes back; see
+     * [AddonSource.stream][com.music.bitchord.data.sources.AddonSource.stream].
+     *
+     * Off by default because it costs a round trip on exactly the tracks an
+     * addon has no Dolby stream for, and because the stereo file is often the
+     * lossless one. It can only ask: an addon that has no such stream still
+     * answers in stereo, and that is what plays.
+     */
+    val dolbyStreamsOnly = MutableStateFlow(false)
+
+    /**
      * Play a YouTube-queued track straight from an addon ranked above YouTube,
      * rather than starting it on YouTube and swapping up mid-song.
      *
@@ -995,6 +1014,7 @@ object AppSettings {
         loudnessNormalization.value = prefs.getBoolean(KEY_LOUDNESS_NORMALIZATION, true)
         loudnessOffOnSpeaker.value = prefs.getBoolean(KEY_LOUDNESS_OFF_ON_SPEAKER, true)
         dolbyAtmos.value = prefs.getBoolean(KEY_DOLBY_ATMOS, true)
+        dolbyStreamsOnly.value = prefs.getBoolean(KEY_DOLBY_STREAMS_ONLY, false)
         directSourceStream.value = prefs.getBoolean(KEY_DIRECT_SOURCE_STREAM, false)
         spatialAudio.value = prefs.getBoolean(KEY_SPATIAL_AUDIO, false)
         equalizerEnabled.value = prefs.getBoolean(KEY_EQ_ENABLED, false)
@@ -1305,6 +1325,11 @@ object AppSettings {
     fun setSkipSilence(value: Boolean) {
         skipSilence.value = value
         prefs.edit().putBoolean(KEY_SKIP_SILENCE, value).apply()
+    }
+
+    fun setDolbyStreamsOnly(value: Boolean) {
+        dolbyStreamsOnly.value = value
+        prefs.edit().putBoolean(KEY_DOLBY_STREAMS_ONLY, value).apply()
     }
 
     fun setDolbyAtmos(value: Boolean) {
@@ -2267,6 +2292,7 @@ object AppSettings {
     private const val KEY_LOUDNESS_NORMALIZATION = "loudness_normalization"
     private const val KEY_LOUDNESS_OFF_ON_SPEAKER = "loudness_off_on_speaker"
     private const val KEY_DOLBY_ATMOS = "dolby_atmos"
+    private const val KEY_DOLBY_STREAMS_ONLY = "dolby_streams_only"
     private const val KEY_DIRECT_SOURCE_STREAM = "direct_source_stream"
     private const val KEY_SPATIAL_AUDIO = "spatial_audio"
     private const val KEY_EQ_ENABLED = "equalizer_enabled"

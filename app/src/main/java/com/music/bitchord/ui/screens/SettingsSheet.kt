@@ -234,6 +234,7 @@ fun SettingsScreen(
     val automixPerformance by AppSettings.automixPerformanceMode.collectAsStateWithLifecycle()
     val skipSilence by AppSettings.skipSilence.collectAsStateWithLifecycle()
     val dolbyAtmos by AppSettings.dolbyAtmos.collectAsStateWithLifecycle()
+    val dolbyStreamsOnly by AppSettings.dolbyStreamsOnly.collectAsStateWithLifecycle()
     val directSourceStream by AppSettings.directSourceStream.collectAsStateWithLifecycle()
     // A property of the hardware, so it is read once rather than remembered
     // against a key that can never change — see [DeviceCodecs.playsDolbyAtmos],
@@ -584,6 +585,21 @@ fun SettingsScreen(
                                 )
                             },
                             onClick = { AppSettings.setDolbyAtmos(!dolbyAtmos) },
+                        )
+                    }
+                }
+                // Part of the row above rather than a setting of its own: it
+                // only says how hard to ask for what that one switches on, and
+                // is dimmed with it. See [AppSettings.dolbyStreamsOnly].
+                val dolbyStreamsOnlyTitle = stringResource(R.string.dolby_streams_only)
+                row(dolbyStreamsOnlyTitle, "atmos", "e-ac-3", "binaural", "stereo", divided = false) {
+                    BypassedByBitPerfect(bitPerfectReady) {
+                        SettingsSubRow(
+                            title = dolbyStreamsOnlyTitle,
+                            subtitle = stringResource(R.string.dolby_streams_only_subtitle),
+                            checked = dolbyStreamsOnly && dolbyAtmos && dolbyAtmosSupported,
+                            onCheckedChange = AppSettings::setDolbyStreamsOnly,
+                            enabled = dolbyAtmos && dolbyAtmosSupported,
                         )
                     }
                 }

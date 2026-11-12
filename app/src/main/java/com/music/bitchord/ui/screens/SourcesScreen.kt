@@ -113,6 +113,8 @@ fun SourcesScreen(
     onEditSource: (SourceConfig) -> Unit,
     /** Asks the activity to open an addon's quality list — raised for the same reason as [onEditSource]. */
     onChooseSourceQuality: (SourceConfig) -> Unit,
+    /** Asks the activity to open an addon's other settings — raised for the same reason as [onEditSource]. */
+    onChooseSourceSettings: (SourceConfig) -> Unit,
     /** Asks the activity to explain an addon's "Outdated addon" line — raised for the same reason. */
     onExplainOutdatedAddon: (SourceConfig) -> Unit,
     /**
@@ -255,6 +257,7 @@ fun SourcesScreen(
                         // change, so a tap on them would open an empty editor.
                         onClick = if (config.kind.needsServer) ({ onEditSource(config) }) else null,
                         onChooseQuality = { onChooseSourceQuality(config) },
+                        onChooseSettings = { onChooseSourceSettings(config) },
                         onExplainOutdated = { onExplainOutdatedAddon(config) },
                         // YouTube gets no switch at all — see
                         // [SourceRegistry.setEnabled] for why one would be a lie.
@@ -770,6 +773,8 @@ private fun SourceRow(
     health: SourceHealth?,
     onClick: (() -> Unit)?,
     onChooseQuality: () -> Unit,
+    /** Opens the addon's selects other than quality, which only an addon declaring some shows. */
+    onChooseSettings: () -> Unit,
     /** Explains the "Outdated addon" line, which only an addon with [needsUpdate] shows. */
     onExplainOutdated: () -> Unit,
     /** Null for a source that cannot be switched off, which gets a label instead. */
@@ -863,6 +868,40 @@ private fun SourceRow(
                     Spacer(Modifier.width(4.dp))
                     Text(
                         text = quality.label,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Icon(
+                        imageVector = SfIcons.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(10.dp),
+                    )
+                }
+            }
+            // The addon's other selects, on one line however many it declares,
+            // for the reason the quality line is one line: every addon's row
+            // grows by the same amount. The list it opens has each in full.
+            if (config.kind == SourceKind.ADDON && config.isComplete && config.choiceSettings.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .clickable(onClick = onChooseSettings)
+                        .padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = SfIcons.Tune,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = config.choiceSummary,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,

@@ -271,6 +271,8 @@ import com.music.bitchord.ui.components.isGlassSupported
 import com.music.bitchord.data.sources.SourceConfig
 import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceRegistry
+import com.music.bitchord.data.sources.addon.AddonChoiceSetting
+import com.music.bitchord.data.sources.addon.AddonQualityOption
 import com.music.bitchord.ui.components.ChoiceAlert
 import com.music.bitchord.ui.components.ListenBrainzTokenAlert
 import com.music.bitchord.ui.components.MiniPlayer
@@ -646,6 +648,10 @@ private fun BitChordApp(
     // and the mini player, like every other alert in the app.
     var editingSource by remember { mutableStateOf<SourceConfig?>(null) }
     var choosingSourceQuality by remember { mutableStateOf<SourceConfig?>(null) }
+    // An addon's other selects, in two steps: which setting, then its value.
+    // The key is null on the first and names the setting on the second.
+    var choosingSourceSettings by remember { mutableStateOf<SourceConfig?>(null) }
+    var choosingSourceSettingKey by remember { mutableStateOf<String?>(null) }
     /** An addon whose "Outdated addon" line was tapped; see [SourceConfig.needsAddonUpdate]. */
     var explainingOutdatedAddon by remember { mutableStateOf<SourceConfig?>(null) }
     var confirmJioSaavn by remember { mutableStateOf(false) }
@@ -2831,6 +2837,14 @@ private fun BitChordApp(
         BackHandler(enabled = discordDialog != null) { discordDialog = null }
         BackHandler(enabled = editingSource != null) { editingSource = null }
         BackHandler(enabled = choosingSourceQuality != null) { choosingSourceQuality = null }
+        BackHandler(enabled = choosingSourceSettings != null) {
+            // Back from a setting's values is back to the list of settings.
+            if (choosingSourceSettingKey != null) {
+                choosingSourceSettingKey = null
+            } else {
+                choosingSourceSettings = null
+            }
+        }
         BackHandler(enabled = explainingOutdatedAddon != null) { explainingOutdatedAddon = null }
         BackHandler(enabled = editingPartyServer) { editingPartyServer = false }
         BackHandler(enabled = editingSignatureApi) { editingSignatureApi = false }
@@ -3063,6 +3077,10 @@ private fun BitChordApp(
                                 contentPadding = listPadding,
                                 onEditSource = { editingSource = it },
                                 onChooseSourceQuality = { choosingSourceQuality = it },
+                                onChooseSourceSettings = {
+                                    choosingSourceSettingKey = null
+                                    choosingSourceSettings = it
+                                },
                                 onExplainOutdatedAddon = { explainingOutdatedAddon = it },
                                 onEditWebDav = { showWebDavEditor = true },
                                 onEditSmb = { showSmbEditor = true },
@@ -5876,6 +5894,51 @@ private fun BitChordApp(
                 },
                 onDismiss = { choosingSourceQuality = null },
             )
+        }
+
+        choosingSourceSettings?.let { opened ->
+            // Off the stored config, for the reason above.
+            val config = SourceRegistry.config(opened.id) ?: opened
+            val setting = config.choiceSettings.firstOrNull { it.key == choosingSourceSettingKey }
+            if (setting == null) {
+                ChoiceAlert<AddonChoiceSetting?>(
+                    hazeState = hazeState,
+                    title = config.displayName,
+                    message = null,
+                    options = config.choiceSettings,
+                    // Nothing ticked: this list is of settings, not of values.
+                    selected = null,
+                    label = { it?.label.orEmpty() },
+                    detail = { listed -> listed?.let { config.activeChoice(it) }?.label },
+                    onSelect = { choosingSourceSettingKey = it?.key },
+                    onDismiss = { choosingSourceSettings = null },
+                )
+            } else {
+                ChoiceAlert<AddonQualityOption?>(
+                    hazeState = hazeState,
+                    title = setting.label,
+                    message = null,
+                    options = setting.options,
+                    selected = config.activeChoice(setting),
+                    label = { it?.label.orEmpty() },
+                    onSelect = { option ->
+                        SourceRegistry.config(config.id)?.let { stored ->
+                            SourceRegistry.update(
+                                stored.copy(
+                                    pickedSettings = if (option == null) {
+                                        stored.pickedSettings - setting.key
+                                    } else {
+                                        stored.pickedSettings + (setting.key to option.value)
+                                    },
+                                ),
+                            )
+                        }
+                        choosingSourceSettingKey = null
+                        choosingSourceSettings = null
+                    },
+                    onDismiss = { choosingSourceSettingKey = null },
+                )
+            }
         }
 
         explainingOutdatedAddon?.let { config ->

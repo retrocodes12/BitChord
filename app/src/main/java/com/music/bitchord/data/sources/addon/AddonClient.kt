@@ -36,7 +36,12 @@ import java.util.concurrent.TimeUnit
  * [pickedQuality] is the `quality` value the listener chose for this addon, or
  * null for the addon's first listed option. See [settingsFor] for when it applies.
  */
-class AddonClient(rawBaseUrl: String, private val pickedQuality: String? = null) {
+class AddonClient(
+    rawBaseUrl: String,
+    private val pickedQuality: String? = null,
+    /** What the listener chose for the addon's other selects, by key — see [settingsFor]. */
+    private val pickedSettings: Map<String, String> = emptyMap(),
+) {
 
     /** Where this addon lives, with `/manifest.json` and trailing slashes off. */
     val baseUrl: String = normalizeBase(rawBaseUrl)
@@ -175,9 +180,18 @@ class AddonClient(rawBaseUrl: String, private val pickedQuality: String? = null)
      * a stereo row the listener picked by hand from the Addons search: there
      * `auto` is not an offer but an override, and the addon answers with the
      * Atmos sibling of the very row that was chosen over it.
+     *
+     * [dolbyOnly] is the opposite ask, and the two are never set together: the
+     * hint goes out in the spec's strict form, where a stereo rendition is not
+     * an answer. It is for an Atmos row that `auto` got a stereo file for.
      */
-    suspend fun stream(trackId: String, tier: String, stereoOnly: Boolean = false): Result<AddonStream> {
-        val params = settingsFor(tier, stereoOnly)
+    suspend fun stream(
+        trackId: String,
+        tier: String,
+        stereoOnly: Boolean = false,
+        dolbyOnly: Boolean = false,
+    ): Result<AddonStream> {
+        val params = settingsFor(tier, stereoOnly, dolbyOnly)
         return streams.get(
             key = keyOf(trackId, params.toString()),
             describe = { "▶ addon stream(${redact(baseUrl)}) id=$trackId tier=$tier quality=${params[QUALITY_KEY]}" },
@@ -227,13 +241,27 @@ class AddonClient(rawBaseUrl: String, private val pickedQuality: String? = null)
      * Last comes `atmos`, which is the one parameter here that is not about
      * quality. See [atmosHint].
      */
-    private suspend fun settingsFor(tier: String, stereoOnly: Boolean = false): Map<String, String> {
+    private suspend fun settingsFor(
+        tier: String,
+        stereoOnly: Boolean = false,
+        dolbyOnly: Boolean = false,
+    ): Map<String, String> {
         val manifest = manifest().getOrNull()
         val declared = manifest?.settings.orEmpty()
         val params = LinkedHashMap<String, String>()
         declared.forEach { setting ->
             val key = setting.key.takeIf { it.isNotBlank() } ?: return@forEach
             setting.defaultValue?.let { params[key] = it }
+        }
+        // What the listener picked for the addon's other selects, over the
+        // declared default of the same key. Held to the list the addon
+        // publishes now, for the reason a `quality` pick is: a value it has
+        // stopped listing would land on its fallback. With no manifest in hand
+        // there is nothing to hold it to, so it goes as chosen.
+        pickedSettings.forEach { (key, value) ->
+            if (key == QUALITY_KEY) return@forEach
+            val listed = declared.firstOrNull { it.key == key }?.options.orEmpty().mapNotNull { it.stringValue }
+            if (manifest == null || value in listed) params[key] = value
         }
         if (tier.isNotBlank()) {
             val options = declared.firstOrNull { it.key == QUALITY_KEY }
@@ -258,6 +286,23 @@ class AddonClient(rawBaseUrl: String, private val pickedQuality: String? = null)
                     .mapNotNull { it.stringValue }
                     .firstOrNull { ATMOS_OFF.matches(it) }
                     ?: ATMOS_NEVER
+            }
+        } else if (dolbyOnly && atmosHint() != null) {
+            // Asked for the Dolby stream by name, so the strict form of the
+            // hint, which this one request is allowed to override a default
+            // or a pick with: both were already tried and answered in stereo.
+            // An addon that declared its own `atmos` setting is sent its own
+            // word for it; one whose list has no such word is left as it was,
+            // since a value it does not list would land on its fallback.
+            val atmosSetting = declared.firstOrNull { it.key == ATMOS_KEY }
+            if (atmosSetting == null) {
+                params[ATMOS_KEY] = ATMOS_STRICT
+            } else {
+                atmosSetting.options
+                    .mapNotNull { it.stringValue }
+                    .firstOrNull { ATMOS_ONLY.matches(it) }
+                    ?.let { params[ATMOS_KEY] = it }
+                atmosHint()?.let { params.putIfAbsent(ATMOS_KEY, it) }
             }
         } else {
             atmosHint()?.let { params.putIfAbsent(ATMOS_KEY, it) }
@@ -498,6 +543,11 @@ class AddonClient(rawBaseUrl: String, private val pickedQuality: String? = null)
         private const val ATMOS_KEY = "atmos"
         private const val ATMOS_AUTO = "auto"
         private const val ATMOS_NEVER = "0"
+
+        /** The spec's strict mode: the immersive mix or an error, never a stereo answer. */
+        private const val ATMOS_STRICT = "1"
+        private val ATMOS_ONLY =
+            Regex("1|true|on|yes|only|always|force|forced|strict|atmos|dolby", RegexOption.IGNORE_CASE)
         private val ATMOS_OFF = Regex("0|false|off|no|none|never|stereo", RegexOption.IGNORE_CASE)
 
         private val HIGH_WORDS = listOf("high", "320", "normal", "standard")

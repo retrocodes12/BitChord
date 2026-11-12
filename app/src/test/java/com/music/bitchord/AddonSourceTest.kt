@@ -9,6 +9,7 @@ import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.StreamRequest
 import com.music.bitchord.data.sources.addon.AddonAuth
+import com.music.bitchord.data.sources.addon.AddonChoiceSetting
 import com.music.bitchord.data.sources.addon.AddonClient
 import com.music.bitchord.data.sources.addon.AddonException
 import com.music.bitchord.data.sources.addon.AddonQualityOption
@@ -73,6 +74,7 @@ class AddonSourceTest {
         server.shutdown()
         DeviceCodecs.forced = null
         AppSettings.dolbyAtmos.value = true
+        AppSettings.dolbyStreamsOnly.value = false
         AddonAuth.testHeaders = null
         AddonAuth.refuseForTest(null)
     }
@@ -1285,6 +1287,221 @@ class AddonSourceTest {
         )
         assertNull(StreamContainer.manifestMimeOf("https://cdn.example.com/audio/track.flac"))
         assertNull(StreamContainer.manifestMimeOf("https://cdn.example.com/audio/track"))
+    }
+
+    // ── The addon's other selects ─────────────────────────────────────────
+
+    private fun settingsManifest() = json(
+        """
+        {"id":"a","name":"A","bitchordAuth":true,"resources":["search","stream","settings"],
+         "settings":[{"key":"quality","type":"select","default":"max",
+                      "options":[{"value":"max","label":"MAX"},{"value":"low","label":"Low"}]},
+                     {"key":"atmos","type":"select","label":"Dolby Atmos","default":"binaural",
+                      "options":[{"value":"binaural","label":"Binaural FLAC"},
+                                 {"value":"only","label":"E-AC-3 JOC"},{"value":"off"}]},
+                     {"key":"region","type":"text","default":"us"},
+                     {"key":"single","type":"select","options":[{"value":"x"}]}]}
+        """.trimIndent(),
+    )
+
+    /**
+     * Every select with a real choice in it, and nothing else: `quality` has
+     * its own picker, a text field has nothing to list, and a select of one
+     * value is not a choice.
+     */
+    @Test
+    fun `the selects other than quality are what the settings picker lists`() = runBlocking {
+        route("/manifest.json", settingsManifest())
+
+        val listed = AddonClient(server.url("/").toString()).manifest().getOrThrow().choiceSettings
+
+        assertEquals(listOf("atmos"), listed.map { it.key })
+        val atmos = listed.single()
+        assertEquals("Dolby Atmos", atmos.label)
+        assertEquals("binaural", atmos.defaultValue)
+        assertEquals(listOf("binaural", "only", "off"), atmos.options.map { it.value })
+        // An option with no label of its own is shown by its value.
+        assertEquals(listOf("Binaural FLAC", "E-AC-3 JOC", "off"), atmos.options.map { it.label })
+    }
+
+    /**
+     * The point of the picker: an addon that declared `atmos` hears its own
+     * default from this app and nothing else, because the hint only fills a
+     * gap. A pick is how the listener reaches the addon's other values.
+     */
+    @Test
+    fun `a picked setting travels in place of its default on search and stream`() = runBlocking {
+        route("/manifest.json", settingsManifest())
+        route("/search", json("""{"tracks":[]}"""))
+        route("/stream/t1", json("""{"url":"https://cdn/a.flac","codec":"flac"}"""))
+
+        val source = AddonSource(config().copy(pickedSettings = mapOf("atmos" to "only")))
+        source.search("x", limit = 5)
+        source.stream("t1", StreamRequest.Lossless)
+
+        assertEquals("only", requestFor("/search").queryParameter("atmos"))
+        assertEquals("only", requestFor("/stream/t1").queryParameter("atmos"))
+        // What was not picked still goes as declared.
+        assertEquals("us", requestFor("/stream/t1").queryParameter("region"))
+    }
+
+    /** A value the addon has stopped listing would land on its fallback, so its default goes instead. */
+    @Test
+    fun `a pick the addon no longer lists gives way to its default`() = runBlocking {
+        route("/manifest.json", settingsManifest())
+        route("/stream/t1", json("""{"url":"https://cdn/a.flac","codec":"flac"}"""))
+
+        AddonSource(config().copy(pickedSettings = mapOf("atmos" to "gone"))).stream("t1", StreamRequest.Lossless)
+
+        assertEquals("binaural", requestFor("/stream/t1").queryParameter("atmos"))
+    }
+
+    /** A stereo row picked by hand outranks a standing pick: it was asked for by name. */
+    @Test
+    fun `a picked stereo row still pins a picked atmos setting off`() = runBlocking {
+        route("/manifest.json", settingsManifest())
+        route("/stream/t1", json("""{"url":"https://cdn/a.flac","codec":"flac"}"""))
+
+        AddonSource(config().copy(pickedSettings = mapOf("atmos" to "only")))
+            .stream("t1", StreamRequest.Lossless, stereoOnly = true)
+
+        assertEquals("off", requestFor("/stream/t1").queryParameter("atmos"))
+    }
+
+    @Test
+    fun `the option in force is the pick, then the declared default, then nothing`() {
+        val atmos = AddonChoiceSetting(
+            key = "atmos",
+            label = "Dolby Atmos",
+            options = listOf(AddonQualityOption("binaural", "Binaural FLAC"), AddonQualityOption("only", "E-AC-3 JOC")),
+            defaultValue = "binaural",
+        )
+        val region = AddonChoiceSetting(
+            key = "region",
+            label = "Region",
+            options = listOf(AddonQualityOption("us", "US"), AddonQualityOption("eu", "EU")),
+        )
+        val listed = config().copy(choiceSettings = listOf(atmos, region))
+
+        assertEquals("binaural", listed.activeChoice(atmos)?.value)
+        assertEquals("only", listed.copy(pickedSettings = mapOf("atmos" to "only")).activeChoice(atmos)?.value)
+        assertEquals("binaural", listed.copy(pickedSettings = mapOf("atmos" to "gone")).activeChoice(atmos)?.value)
+        // No pick and no default: nothing is sent, so nothing is claimed.
+        assertNull(listed.activeChoice(region))
+        assertEquals("Dolby Atmos: Binaural FLAC · Region", listed.choiceSummary)
+    }
+
+    // ── Insisting on the Dolby stream ─────────────────────────────────────
+
+    /**
+     * A server that answers `auto` with a stereo rendition of the immersive
+     * mix and keeps the Dolby stream for the strict ask, when it has one.
+     */
+    private fun stereoUnlessStrictDispatcher(dolbyUrl: String?) = object : Dispatcher() {
+        override fun dispatch(request: RecordedRequest): MockResponse {
+            synchronized(seen) { seen += request }
+            val url = request.requestUrl
+            val path = url?.encodedPath.orEmpty()
+            if (!path.startsWith("/stream/")) return routes[path] ?: MockResponse().setResponseCode(404)
+            return if (dolbyUrl != null && url?.queryParameter("atmos") == "1") {
+                json(
+                    """
+                    {"url":"$dolbyUrl","format":"dash","quality":"Dolby Atmos","codec":"eac3-joc",
+                     "container":"mp4","manifest":"dash","sampleRate":48000,"atmos":true,"encrypted":false}
+                    """.trimIndent(),
+                )
+            } else {
+                json("""{"url":"https://cdn.example.com/binaural.flac","codec":"flac","container":"flac"}""")
+            }
+        }
+    }
+
+    private fun streamAsks(path: String) = synchronized(seen) {
+        seen.filter { it.requestUrl?.encodedPath == path }.map { it.requestUrl?.queryParameter("atmos") }
+    }
+
+    @Test
+    fun `an atmos row answered in stereo is asked for again strictly and plays the dolby stream`() = runBlocking {
+        AppSettings.dolbyStreamsOnly.value = true
+        server.dispatcher = stereoUnlessStrictDispatcher("https://cdn.example.com/dash/atmos")
+        route("/manifest.json", manifest())
+
+        val stream = AddonSource(config())
+            .stream("t1", StreamRequest.Lossless, stereoOnly = false, atmosRow = true)!!
+
+        assertEquals(listOf("auto", "1"), streamAsks("/stream/t1"))
+        assertTrue(stream.format.isDolbyAtmos)
+        assertEquals("https://cdn.example.com/dash/atmos", stream.url)
+    }
+
+    /** It can only ask. An addon with no Dolby stream still answers in stereo, and that plays. */
+    @Test
+    fun `the stereo answer stands when the strict ask gets no dolby stream`() = runBlocking {
+        AppSettings.dolbyStreamsOnly.value = true
+        server.dispatcher = stereoUnlessStrictDispatcher(null)
+        route("/manifest.json", manifest())
+
+        val stream = AddonSource(config())
+            .stream("t1", StreamRequest.Lossless, stereoOnly = false, atmosRow = true)!!
+
+        assertEquals(listOf("auto", "1"), streamAsks("/stream/t1"))
+        assertEquals("flac", stream.format.codec)
+        assertEquals("https://cdn.example.com/binaural.flac", stream.url)
+    }
+
+    @Test
+    fun `nothing is asked twice while the setting is off`() = runBlocking {
+        server.dispatcher = stereoUnlessStrictDispatcher("https://cdn.example.com/dash/atmos")
+        route("/manifest.json", manifest())
+
+        val stream = AddonSource(config())
+            .stream("t1", StreamRequest.Lossless, stereoOnly = false, atmosRow = true)!!
+
+        assertEquals(listOf("auto"), streamAsks("/stream/t1"))
+        assertEquals("flac", stream.format.codec)
+    }
+
+    /** Strict mode makes "no immersive mix" an error, so it is kept to rows known to have one. */
+    @Test
+    fun `a row that is not tagged atmos is never asked for strictly`() = runBlocking {
+        AppSettings.dolbyStreamsOnly.value = true
+        server.dispatcher = stereoUnlessStrictDispatcher("https://cdn.example.com/dash/atmos")
+        route("/manifest.json", manifest())
+
+        AddonSource(config()).stream("t1", StreamRequest.Lossless)
+
+        assertEquals(listOf("auto"), streamAsks("/stream/t1"))
+    }
+
+    /** A caller that doesn't say is covered by what the search row said. */
+    @Test
+    fun `a row the search tagged atmos is asked for strictly without being told`() = runBlocking {
+        AppSettings.dolbyStreamsOnly.value = true
+        server.dispatcher = stereoUnlessStrictDispatcher("https://cdn.example.com/dash/atmos")
+        route("/manifest.json", manifest())
+        route(
+            "/search",
+            json("""{"tracks":[{"id":"t1","title":"S","artist":"A","audioQuality":"LOW","audioModes":["DOLBY_ATMOS"]}]}"""),
+        )
+
+        val source = AddonSource(config())
+        source.search("s", limit = 5)
+        val stream = source.stream("t1", StreamRequest.Lossless)!!
+
+        assertEquals(listOf("auto", "1"), streamAsks("/stream/t1"))
+        assertTrue(stream.format.isDolbyAtmos)
+    }
+
+    /** An addon with its own word for it is sent that word, not this app's. */
+    @Test
+    fun `the strict ask uses the option an addon declares for atmos`() = runBlocking {
+        AppSettings.dolbyStreamsOnly.value = true
+        route("/manifest.json", settingsManifest())
+        route("/stream/t1", json("""{"url":"https://cdn/a.flac","codec":"flac"}"""))
+
+        AddonSource(config()).stream("t1", StreamRequest.Lossless, stereoOnly = false, atmosRow = true)
+
+        assertEquals(listOf("binaural", "only"), streamAsks("/stream/t1"))
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────

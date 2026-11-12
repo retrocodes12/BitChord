@@ -49,8 +49,9 @@ data class AddonManifest(
      *
      * Read mostly for its *defaults*. The protocol has the host render a form
      * for these and send whatever the user picked back as query parameters on
-     * every request; BitChord draws that form for `quality` alone — see
-     * [qualityOptions] — and sends the declared defaults for the rest. That is
+     * every request; BitChord draws that form for the selects — `quality` in
+     * [qualityOptions], the others in [choiceSettings] — and sends the
+     * declared defaults for the rest and for anything left unpicked. That is
      * explicitly enough — the spec says an addon "that never reads a setting
      * still behaves correctly", and the default is what the reference host
      * sends until a user changes something. What it buys is the addon that
@@ -103,6 +104,26 @@ data class AddonManifest(
             .takeIf { it.size > 1 }
             .orEmpty()
 
+    /**
+     * The selects the listener can set besides `quality`: every other declared
+     * setting that enumerates at least two usable values. What is picked
+     * travels as that setting's query parameter in place of its default — see
+     * [AddonClient.settingsFor].
+     *
+     * This is what an addon's own switch for how it serves a track is reached
+     * through. One that declares `atmos` as a select has said its default
+     * stands, and the `?atmos=auto` hint leaves it alone; without a picker for
+     * it that default is the only value the addon ever hears from this app.
+     *
+     * A setting with nothing to choose from (a text field, a bare toggle) is
+     * not listed and stays on its default, as before.
+     */
+    val choiceSettings: List<AddonChoiceSetting>
+        get() = settings
+            .filter { it.key.isNotBlank() && it.key != AddonClient.QUALITY_KEY }
+            .distinctBy { it.key }
+            .mapNotNull { setting -> setting.asChoice() }
+
     fun declares(resource: String): Boolean =
         resources.any { it.equals(resource, ignoreCase = true) }
 
@@ -125,24 +146,65 @@ data class AddonManifest(
 }
 
 /**
- * One declared setting, reduced to the two things this app does with it.
+ * One declared setting, reduced to the things this app does with it.
  *
- * [default] is what gets sent, and [options] is what a `quality` request is
- * matched against and what its picker lists — see [AddonClient.settingsFor]. The
- * rest of the schema is a form description: a type, a label, a help line,
- * bounds. The reference host renders a form from those; this app draws only the
- * one picker, in its own words, and carrying fields nothing reads would make the
- * class look like it presents a UI it has no part in.
+ * [default] is what gets sent, and [options] is what a request is matched
+ * against and what a picker lists — see [AddonClient.settingsFor]. [label] is
+ * what a picker other than the `quality` one is headed with. The rest of the
+ * schema is a form description: a type, a help line, bounds. The reference
+ * host renders a form from those; this app draws only pickers for the selects,
+ * and carrying fields nothing reads would make the class look like it presents
+ * a UI it has no part in.
  */
 @Serializable
 data class AddonSetting(
     @SerialName("key") val key: String = "",
     @SerialName("default") val default: JsonElement? = null,
     @SerialName("options") val options: List<AddonSettingOption> = emptyList(),
+    /** What the addon calls the setting. Read as an element for the reason an option's label is. */
+    @SerialName("label") val label: JsonElement? = null,
 ) {
     /** [default] as the string that would go in a query parameter, or null. */
     val defaultValue: String? get() = default?.asQueryValue()
+
+    /**
+     * This setting as a list the listener can pick from, or null when it
+     * enumerates fewer than two usable values — see
+     * [AddonManifest.choiceSettings].
+     */
+    internal fun asChoice(): AddonChoiceSetting? {
+        val choices = options
+            .mapNotNull { option ->
+                option.stringValue?.let { value -> AddonQualityOption(value, option.labelText ?: value) }
+            }
+            .distinctBy { it.value }
+        if (choices.size < 2) return null
+        return AddonChoiceSetting(
+            key = key,
+            label = label?.asQueryValue() ?: key,
+            options = choices,
+            // Only a default the list actually holds: one it doesn't is not a
+            // choice that can be shown as the one in force.
+            defaultValue = defaultValue?.takeIf { declared -> choices.any { it.value == declared } },
+        )
+    }
 }
+
+/**
+ * One declared select other than `quality`, as stored with the source — see
+ * [SourceConfig.choiceSettings][com.music.bitchord.data.sources.SourceConfig.choiceSettings].
+ *
+ * [defaultValue] is the option the manifest's default names, or null when it
+ * names none. With no pick and no default nothing is sent for the key, and the
+ * addon's own server-side default is what applies.
+ */
+@Serializable
+data class AddonChoiceSetting(
+    val key: String,
+    val label: String,
+    val options: List<AddonQualityOption>,
+    val defaultValue: String? = null,
+)
 
 /** One choice in a select. Only the value travels; the label is the host's to draw. */
 @Serializable
