@@ -498,8 +498,24 @@ compose.desktop {
             it.metadata.installationPath.asFile.absolutePath
         }.get()
         mainClass = composeMainClass
-        jvmArgs("-Xmx512m")
         jvmArgs("-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=20000", "-XX:G1PeriodicGCSystemLoadThreshold=0")
+        if (targetOs == "linux") {
+            // Sized for the laptops this build is used on. Measured on a 4 GB i3-3217U with a
+            // song playing, against the options below it: resident memory 955 MB -> about 720 MB
+            // (with MALLOC_ARENA_MAX in the AppImage's AppRun), and no C2 compiler thread, which
+            // took a third of a core for the first minutes and a tenth after.
+            //  - The live set is about 70 MB, so the heap is kept close to it: G1 otherwise
+            //    commits as much again as slack. 384 MB is the ceiling, not the expectation.
+            //  - C1 only. The time goes to Skia and FFmpeg, not to Kotlin loops; the frame rate
+            //    with C2 was no higher.
+            //  - The application calls System.gc() itself; concurrently, that is a pause of
+            //    under 30 ms instead of over 100, which matters because the audio thread is Java.
+            jvmArgs("-Xmx384m", "-XX:MinHeapFreeRatio=15", "-XX:MaxHeapFreeRatio=40")
+            jvmArgs("-XX:TieredStopAtLevel=1")
+            jvmArgs("-XX:+ExplicitGCInvokesConcurrent", "-XX:ParallelGCThreads=2", "-XX:ConcGCThreads=1")
+        } else {
+            jvmArgs("-Xmx512m")
+        }
         jvmArgs("-Dbitchord.version=$appVersion")
         if (desktopModuleIndexUrl.isNotBlank()) {
             jvmArgs("-Dbitchord.module.index=$desktopModuleIndexUrl")

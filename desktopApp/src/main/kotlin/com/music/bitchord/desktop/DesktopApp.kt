@@ -329,6 +329,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -392,6 +393,9 @@ internal fun desktopSwitchColors() = SwitchDefaults.colors(
 internal val DesktopSecondary = Color(0xFF8E8E93)
 internal val DesktopDivider = Color(0xFF2C2C2E)
 private const val STATS_SAMPLE_MS = 5_000L
+
+/** How far the playhead moves before the page as a whole hears of it; see where it is collected. */
+private const val ROOT_PLAYHEAD_STEP_MS = 500L
 
 /** How often the playhead is offered to the history tracker. */
 private const val HISTORY_SAMPLE_MS = 5_000L
@@ -1838,7 +1842,17 @@ fun BitChordDesktopApp() {
             }
         }
     }
-    val playback by playbackEngine.state.collectAsState()
+    // The engine reports the playhead on every audio write. This page reads it only for the top
+    // bar's progress line and one threshold, so it is handed a coarse clock: collected as it
+    // comes, each tick recomposed the whole window, some sixty times a second while a song
+    // played. Everything that draws the playhead finely reads [playerPosition] below instead.
+    val playback by remember(playbackEngine) {
+        playbackEngine.state.distinctUntilChanged { old, new ->
+            old.positionMs / ROOT_PLAYHEAD_STEP_MS == new.positionMs / ROOT_PLAYHEAD_STEP_MS &&
+                old.copy(positionMs = 0L, positionSampledAtNanos = 0L) ==
+                new.copy(positionMs = 0L, positionSampledAtNanos = 0L)
+        }
+    }.collectAsState(playbackEngine.state.value)
 
     // The shared player reads the playhead off this one object, and only where it
     // draws it — see PlaybackPosition — so a tick never recomposes the player.
@@ -6316,6 +6330,19 @@ private fun DesktopSettingsScreen(
                         reduceDynamicBlur,
                         DesktopAppearanceSettings::setReduceDynamicBlur,
                     )
+                    // Only where the pacer can act; see [DesktopFramePacer].
+                    if (DesktopPlatform.isLinux) {
+                        val frameSaver by DesktopAppearanceSettings.frameSaver.collectAsState()
+                        SettingsToggle(
+                            DesktopStrings["frame_saver", "Save power when idle"],
+                            DesktopStrings[
+                                "frame_saver_subtitle",
+                                "Redraws the window less often while you are not using it",
+                            ],
+                            frameSaver,
+                            DesktopAppearanceSettings::setFrameSaver,
+                        )
+                    }
                     // Window furniture belongs beside the visual settings it changes, rather than
                     // interrupting playback controls. These rows remain Windows-only.
                     if (DesktopPlatform.drawsOwnWindowFrame) {
