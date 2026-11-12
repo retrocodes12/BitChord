@@ -19,8 +19,8 @@ import javax.swing.Timer
 /** About thirty frames a second: smooth enough for lyrics nobody is scrolling. */
 private val IDLE_FRAME_MS: Long = java.lang.Long.getLong("bitchord.pace.idle", 33L)
 
-/** Four frames a second: the playhead and the lyrics still move, at a glance. */
-private val BACKGROUND_FRAME_MS: Long = java.lang.Long.getLong("bitchord.pace.background", 250L)
+/** Two frames a second: the playhead and the lyrics still move, at a glance. */
+private val BACKGROUND_FRAME_MS: Long = java.lang.Long.getLong("bitchord.pace.background", 500L)
 
 /**
  * Redraws the window as often as the listener can use, and no oftener.
@@ -130,7 +130,7 @@ internal object DesktopFramePacer {
         if (next == previous) return
         pace = next
         // Out of the slow pace the limiter may be most of a frame away from noticing, and a
-        // window that takes a quarter of a second to answer a click feels broken.
+        // window that takes half a second to answer a click feels broken.
         if (previous == Pace.BACKGROUND) bridge()
     }
 
