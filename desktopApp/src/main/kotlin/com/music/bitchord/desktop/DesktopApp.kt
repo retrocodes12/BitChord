@@ -24,6 +24,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.model.EntityType
 import com.music.bitchord.data.model.SearchHistoryEntity
+import com.music.bitchord.data.model.withCorrectedType
 import com.music.bitchord.ui.LocalPullToRefreshEnabled
 import com.music.bitchord.ui.screens.ExploreScreen
 import com.music.bitchord.ui.screens.HomeScreen
@@ -2214,7 +2215,9 @@ fun BitChordDesktopApp() {
                 BrowseType.ALBUM -> EntityType.ALBUM
                 BrowseType.ARTIST -> EntityType.ARTIST
                 BrowseType.PLAYLIST -> EntityType.PLAYLIST
-                else -> EntityType.TRACK
+                // A page that opens rather than plays — a podcast show, for one. Filed as a
+                // TRACK it would be played as a video the next time it was picked from recents.
+                BrowseType.OTHER -> EntityType.OTHER
             },
         ),
     )
@@ -4218,7 +4221,9 @@ fun BitChordDesktopApp() {
                             typeaheadResults = if (searchTyping && query.isNotBlank()) searchTypeahead else emptyList(),
                             onSubmit = ::search,
                             onSuggestionClick = ::runSearch,
-                            onHistoryClick = { entity ->
+                            onHistoryClick = { saved ->
+                                // An entry an older build filed as a TRACK when it was a page.
+                                val entity = saved.withCorrectedType()
                                 // Going back to a recent does not record it again, as on the phone.
                                 when (entity.entityType) {
                                     EntityType.TRACK -> playSong(
@@ -4231,13 +4236,17 @@ fun BitChordDesktopApp() {
                                         source = DesktopQueueSource(entity.title, PlaybackSourceType.SEARCH),
                                     )
                                     EntityType.ARTIST -> openArtist(entity.id, entity.title)
-                                    EntityType.ALBUM, EntityType.PLAYLIST -> openBrowseItem(
+                                    EntityType.ALBUM, EntityType.PLAYLIST, EntityType.OTHER -> openBrowseItem(
                                         BrowseItem(
                                             browseId = entity.id,
                                             title = entity.title,
                                             subtitle = entity.subtitle,
                                             thumbnailUrl = entity.artworkUrl,
-                                            type = if (entity.entityType == EntityType.ALBUM) BrowseType.ALBUM else BrowseType.PLAYLIST,
+                                            type = when (entity.entityType) {
+                                                EntityType.ALBUM -> BrowseType.ALBUM
+                                                EntityType.PLAYLIST -> BrowseType.PLAYLIST
+                                                else -> BrowseType.OTHER
+                                            },
                                         ),
                                     )
                                 }
