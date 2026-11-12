@@ -18,6 +18,9 @@ dependencyResolutionManagement {
 rootProject.name = "BitChord"
 include(":shared")
 include(":sharedUi")
+// The desktop app, which upstream dropped after 1.8.1 and this fork keeps for Linux.
+include(":desktopUi")
+include(":desktopApp")
 
 // The Android module only when there is an SDK to build it against. A machine
 // set up for the desktop alone has none, and including it there fails at
