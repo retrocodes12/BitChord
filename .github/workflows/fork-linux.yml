@@ -7,6 +7,8 @@ name: Fork Linux
 on:
   push:
     branches: [linux]
+    # A change to the notes alone is not worth ten minutes of packaging.
+    paths-ignore: ['**.md']
   workflow_dispatch:
 
 concurrency:

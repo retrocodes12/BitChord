@@ -1,5 +1,13 @@
 # BitChord Desktop
 
+> **In this fork.** Upstream removed the desktop app after 1.8.1 in favour of
+> its web player, and its releases have carried no desktop package since 1.8.
+> The `linux` branch of this fork keeps the app, built on the same shared code
+> as the phone. Every push to it builds an AppImage and a deb in
+> [`.github/workflows/fork-linux.yml`](.github/workflows/fork-linux.yml); they
+> are on the run's page under Artifacts. Only Linux is built and tested here.
+> The Windows and macOS notes below are upstream's, kept as they were.
+
 BitChord has a Kotlin Multiplatform shared module and a Compose Multiplatform
 desktop application for macOS, Linux, and Windows. Desktop uses the JVM target, which is
 the supported Compose Multiplatform desktop model.
@@ -72,7 +80,7 @@ itself, because Windows expects it to be a system component.
 
 jpackage builds a package by driving the target platform's own tooling, so each
 one has to be built on the platform it is for. This is what CI does; see
-[`.github/workflows/release.yml`](.github/workflows/release.yml).
+[`.github/workflows/fork-linux.yml`](.github/workflows/fork-linux.yml).
 
 On macOS:
 
